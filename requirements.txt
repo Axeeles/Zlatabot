@@ -1,2 +1,3 @@
 aiogram==3.10.0
 python-dotenv
+pydantic-core==2.14.6 --only-binary=:all:
