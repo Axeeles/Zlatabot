@@ -1,117 +1,61 @@
-import asyncio
 import os
-import sqlite3
-from datetime import datetime, timedelta
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import CommandStart
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from dotenv import load_dotenv
+import asyncio
+import threading
+import http.server
+import socketserver
 
-# Загружаем переменные окружения (.env для локального теста, Render использует Environment Variables)
+# Загружаем .env
 load_dotenv()
 
-TOKEN = os.getenv("TOKEN")
+# Проверка переменных окружения
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
-ARTICLE_URL = os.getenv("ARTICLE_URL")
+ADMIN_ID = os.getenv("ADMIN_ID")
 
-if not TOKEN or not CHANNEL_ID or not ARTICLE_URL:
-    raise ValueError("❌ Не найдены переменные окружения: TOKEN, CHANNEL_ID или ARTICLE_URL.")
+if not BOT_TOKEN or not CHANNEL_ID or not ADMIN_ID:
+    raise ValueError("[ОШИБКА] Не найдены переменные окружения: BOT_TOKEN, CHANNEL_ID, ADMIN_ID")
 
-bot = Bot(token=TOKEN)
+ADMIN_ID = int(ADMIN_ID)
+
+# Запуск фейкового веб-сервера для Render
+def run_server():
+    PORT = 10000  # любой свободный порт
+    Handler = http.server.SimpleHTTPRequestHandler
+    with socketserver.TCPServer(("", PORT), Handler) as httpd:
+        print(f"Fake web server running on port {PORT}")
+        httpd.serve_forever()
+
+threading.Thread(target=run_server, daemon=True).start()
+
+# Создаём бота
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-# Настройка базы данных
-conn = sqlite3.connect("users.db")
-cursor = conn.cursor()
-cursor.execute("""
-    CREATE TABLE IF NOT EXISTS reminders (
-        user_id INTEGER PRIMARY KEY,
-        last_sent TIMESTAMP,
-        sent_count INTEGER DEFAULT 0
-    )
-""")
-conn.commit()
-
-# Кнопки
-continue_button = InlineKeyboardMarkup(
-    inline_keyboard=[[InlineKeyboardButton(text="Продолжить", callback_data="check_subscription")]]
-)
-
-article_button = InlineKeyboardMarkup(
-    inline_keyboard=[[InlineKeyboardButton(text="Статья", url=ARTICLE_URL)]]
-)
-
-async def is_subscribed(user_id: int) -> bool:
-    """Проверка подписки на канал"""
-    try:
-        member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-        return member.status in ("member", "administrator", "creator")
-    except Exception as e:
-        print(f"Ошибка проверки подписки: {e}")
-        return False
+# Хранилище статистики
+stats = {"users": set()}
 
 @dp.message(CommandStart())
-async def start_cmd(message: types.Message):
-    caption = (
-        "Привет! Статья уже ждет тебя! Бот высылает моментально, "
-        "поэтому жду только твою подписку💡\n\n"
-        "с любовью, kammmil 💋"
-    )
-    await message.answer_photo(
-        photo=types.FSInputFile("zlatapic.jpg"),
-        caption=caption,
-        reply_markup=continue_button
+async def start_handler(message: types.Message):
+    stats["users"].add(message.from_user.id)
+    await message.answer(
+        "Привет! 👋\nЯ бот для подписки на канал.\n"
+        "Подпишись и получи доступ к контенту!"
     )
 
-    if await is_subscribed(message.from_user.id):
-        await send_article(message.from_user.id)
-
-@dp.callback_query(lambda c: c.data == "check_subscription")
-async def check_subscription(callback: types.CallbackQuery):
-    if await is_subscribed(callback.from_user.id):
-        await send_article(callback.from_user.id)
-    else:
-        await callback.message.answer("Зайчик, не вижу твоей подписочки 🐇")
-
-async def send_article(user_id: int):
-    await bot.send_message(user_id, "Отлично! благодарю за подписку🤍")
-    await bot.send_photo(
-        user_id,
-        photo=types.FSInputFile("zlatapic1.jpg"),
-        reply_markup=article_button
-    )
-
-    # Запись в БД для напоминаний
-    cursor.execute(
-        "INSERT OR REPLACE INTO reminders (user_id, last_sent, sent_count) VALUES (?, ?, ?)",
-        (user_id, datetime.now().isoformat(), 0)
-    )
-    conn.commit()
-
-async def reminders():
-    """Фоновая задача для напоминаний"""
-    while True:
-        await asyncio.sleep(60)  # проверка каждую минуту
-        now = datetime.now()
-        cursor.execute("SELECT user_id, last_sent, sent_count FROM reminders")
-        for user_id, last_sent, sent_count in cursor.fetchall():
-            if sent_count >= 3:
-                continue
-            last_time = datetime.fromisoformat(last_sent)
-            delay = timedelta(days=3) if sent_count > 0 else timedelta(minutes=15)
-            if now - last_time >= delay:
-                try:
-                    await bot.send_message(user_id, "Не забывай про статью 📖")
-                    cursor.execute(
-                        "UPDATE reminders SET last_sent = ?, sent_count = sent_count + 1 WHERE user_id = ?",
-                        (now.isoformat(), user_id)
-                    )
-                    conn.commit()
-                except Exception as e:
-                    print(f"Ошибка отправки напоминания: {e}")
+@dp.message(F.text == "/stats")
+async def stats_handler(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ У тебя нет прав на просмотр статистики")
+        return
+    await message.answer(f"📊 Кол-во пользователей: {len(stats['users'])}")
 
 async def main():
-    asyncio.create_task(reminders())
+    print("Бот запущен!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
